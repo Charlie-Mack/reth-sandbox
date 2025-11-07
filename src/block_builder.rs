@@ -3,7 +3,7 @@ use alloy_primitives::{Address, B256, address, hex};
 use alloy_signer_local::PrivateKeySigner;
 use k256::ecdsa::SigningKey;
 use rayon::prelude::*;
-use reth_ethereum::TransactionSigned;
+use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     ConfigureEvm, NextBlockEnvAttributes, RecoveredTx,
     execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
@@ -62,7 +62,7 @@ impl<'a> SandboxBlockBuilder<'a> {
         &mut self,
         block_number: u64,
         actor_pool: &mut ActorPool,
-    ) -> eyre::Result<Block<EthereumTxEnvelope<TxEip4844>>> {
+    ) -> eyre::Result<BlockBuilderOutcome<EthPrimitives>> {
         let mut builder = self
             .evm_config
             .builder_for_next_block(
@@ -152,11 +152,7 @@ impl<'a> SandboxBlockBuilder<'a> {
             cumulative_gas_used += gas_used;
         }
 
-        let BlockBuilderOutcome {
-            execution_result,
-            block,
-            ..
-        } = {
+        let builder_outcome = {
             let _t = time_block_section!(block_number, "finish_building_block");
             let outcome = builder.finish(&self.state_provider).map_err(|err| {
                 warn!(target: "sandbox", %err, "failed to finish building block");
@@ -165,13 +161,11 @@ impl<'a> SandboxBlockBuilder<'a> {
             outcome
         };
 
-        self.parent_header = block.sealed_header().clone();
-        self.parent_timestamp = block.sealed_header().timestamp;
-
-        let block = block.into_block();
+        self.parent_header = builder_outcome.block.sealed_header().clone();
+        self.parent_timestamp = builder_outcome.block.sealed_header().timestamp;
 
         info!("Block built with {} transactions", tx_count);
 
-        Ok(block)
+        Ok(builder_outcome)
     }
 }

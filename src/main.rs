@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use alloy_consensus::{Block, Transaction, TxEip4844Variant};
+use alloy_consensus::{Block, BlockHeader, Transaction, TxEip4844Variant};
 use alloy_primitives::{Address, B256, BlockHash, address, hex};
 use alloy_rlp::Encodable;
 use alloy_signer_local::PrivateKeySigner;
 use k256::ecdsa::SigningKey;
+use reth_chain_state::ExecutedBlock;
 use reth_db::DatabaseEnv;
-use reth_ethereum::TransactionSigned;
+use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     ConfigureEvm, NextBlockEnvAttributes, RecoveredTx,
     execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
@@ -15,8 +16,8 @@ use reth_node_api::NodeTypesWithDBAdapter;
 use reth_node_core::node_config::NodeConfig;
 use reth_node_ethereum::{EthEvmConfig, EthereumNode};
 use reth_primitives_traits::{Recovered, SealedHeader, SignedTransaction};
-use reth_provider::{ProviderFactory, StateProvider};
-use reth_revm::{State, database::StateProviderDatabase};
+use reth_provider::{ExecutionOutcome, ProviderFactory, StateProvider};
+use reth_revm::{State, database::StateProviderDatabase, db::BundleState};
 use tempfile::TempDir;
 use tracing::{info, warn};
 
@@ -99,21 +100,47 @@ async fn main() -> Result<(), eyre::Error> {
     let mut block_file_writer =
         BlockFileWriter::new(&output_path, BlockFileHeader::new(false, 0, 100))?;
 
-    let num_of_blocks = 5;
+    let num_of_blocks = 10;
+
+    let mut blocks: Vec<ExecutedBlock<EthPrimitives>> = Vec::new();
 
     for i in 0..num_of_blocks {
         let block_number = i + 1;
         let _t = time_block_section!(block_number, "block_total");
-        let block = block_builder
+        let builder_outcome = block_builder
             .build_next_block(block_number, &mut actor_pool)
             .await?;
+
+        let block = builder_outcome.block.clone().into_block();
+
+        let execution_output = Arc::new(ExecutionOutcome {
+            bundle: BundleState::default(), // Empty - might be OK for simple saves?
+            receipts: vec![builder_outcome.execution_result.receipts],
+            first_block: builder_outcome.block.header().number(),
+            requests: vec![builder_outcome.execution_result.requests],
+        });
+
+        let executed_block = ExecutedBlock {
+            recovered_block: Arc::new(builder_outcome.block),
+            execution_output,
+            hashed_state: Arc::new(builder_outcome.hashed_state),
+            trie_updates: Arc::new(builder_outcome.trie_updates),
+        };
+
         let mut buf = Vec::with_capacity(block.length());
         block.encode(&mut buf);
+        blocks.push(executed_block);
 
         block_file_writer.write_block(&buf)?;
     }
 
     block_file_writer.finish()?;
+
+    {
+        let _t = time_section!("save_blocks_to_db");
+        let provider = provider_factory.provider_rw()?;
+        provider.save_blocks(blocks)?;
+    }
 
     metrics::run_end();
     crate::metrics::print_section_summary();

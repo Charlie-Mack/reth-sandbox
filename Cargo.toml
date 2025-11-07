@@ -22,6 +22,7 @@ reth-db-common = { git = "https://github.com/paradigmxyz/reth" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth" }
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth" }
 
 # Alloy
 alloy-consensus = { version = "1.0.41", default-features = false }

@@ -8018,6 +8018,7 @@ dependencies = [
  "k256",
  "once_cell",
  "rayon",
+ "reth-chain-state",
  "reth-chainspec",
  "reth-db",
  "reth-db-common",
