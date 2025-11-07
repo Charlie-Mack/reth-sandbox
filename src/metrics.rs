@@ -15,10 +15,36 @@ struct Accum {
 }
 
 // We allow both 'static and owned names via Cow for flexibility.
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 struct Key(Cow<'static, str>);
 
+impl From<&'static str> for Key {
+    fn from(value: &'static str) -> Self {
+        Self(Cow::Borrowed(value))
+    }
+}
+
+impl From<String> for Key {
+    fn from(value: String) -> Self {
+        Self(Cow::Owned(value))
+    }
+}
+
+impl From<Cow<'static, str>> for Key {
+    fn from(value: Cow<'static, str>) -> Self {
+        Self(value)
+    }
+}
+
+impl Key {
+    fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 static SECTIONS: Lazy<Mutex<HashMap<Key, Accum>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static BLOCK_SECTIONS: Lazy<Mutex<HashMap<Key, HashMap<Key, Accum>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // -------- Total run timer --------
 static RUN: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
@@ -48,16 +74,18 @@ thread_local! {
 
 struct ActiveSpan {
     key: Key,
+    block: Option<Key>,
     start: Instant,       // wall-clock start of this span (for inclusive)
     last_resume: Instant, // when we last resumed exclusive accumulation
     paused_exclusive: Duration,
 }
 
 impl ActiveSpan {
-    fn new(key: Key) -> Self {
+    fn new(key: Key, block: Option<Key>) -> Self {
         let now = Instant::now();
         Self {
             key,
+            block,
             start: now,
             last_resume: now,
             paused_exclusive: Duration::ZERO,
@@ -67,6 +95,7 @@ impl ActiveSpan {
 
 pub struct SectionTimer {
     key: Key,
+    block: Option<Key>,
     // field exists just so the type is not ZST; logic is in Drop + thread-local stack
     _private: (),
 }
@@ -76,15 +105,22 @@ pub struct SectionTimer {
 impl SectionTimer {
     #[inline]
     pub fn new_static(name: &'static str) -> Self {
-        start_section(Key(Cow::Borrowed(name)))
+        start_section(name.into(), None)
     }
     #[inline]
     pub fn new_owned(name: String) -> Self {
-        start_section(Key(Cow::Owned(name)))
+        start_section(name.into(), None)
+    }
+    #[inline]
+    pub fn new_grouped(
+        block_label: impl Into<Key>,
+        name: impl Into<Key>,
+    ) -> Self {
+        start_section(name.into(), Some(block_label.into()))
     }
 }
 
-fn start_section(key: Key) -> SectionTimer {
+fn start_section(key: Key, block: Option<Key>) -> SectionTimer {
     STACK.with(|stack| {
         let mut st = stack.borrow_mut();
         let now = Instant::now();
@@ -94,9 +130,9 @@ fn start_section(key: Key) -> SectionTimer {
             parent.paused_exclusive += now - parent.last_resume;
         }
         // Push this section
-        st.push(ActiveSpan::new(key.clone()));
+        st.push(ActiveSpan::new(key.clone(), block.clone()));
     });
-    SectionTimer { key, _private: () }
+    SectionTimer { key, block, _private: () }
 }
 
 impl Drop for SectionTimer {
@@ -114,6 +150,15 @@ impl Drop for SectionTimer {
             {
                 let mut map = SECTIONS.lock().unwrap();
                 let entry = map.entry(self.key.clone()).or_insert_with(Accum::default);
+                entry.inclusive += inclusive;
+                entry.exclusive += exclusive;
+                entry.count += 1;
+            }
+
+            if let Some(block_key) = self.block.clone() {
+                let mut map = BLOCK_SECTIONS.lock().unwrap();
+                let block_entry = map.entry(block_key).or_insert_with(HashMap::new);
+                let entry = block_entry.entry(self.key.clone()).or_insert_with(Accum::default);
                 entry.inclusive += inclusive;
                 entry.exclusive += exclusive;
                 entry.count += 1;
@@ -148,6 +193,25 @@ macro_rules! time_section_owned {
     ($name_expr:expr) => {
         $crate::metrics::SectionTimer::new_owned($name_expr.to_string())
     };
+}
+
+#[macro_export]
+macro_rules! time_block_section {
+    ($block:expr, $name:literal) => {{
+        $crate::metrics::SectionTimer::new_grouped(format!("block {}", $block), $name)
+    }};
+    ($block:expr, $fmt:literal, $($arg:tt)+) => {{
+        $crate::metrics::SectionTimer::new_grouped(
+            format!("block {}", $block),
+            format!($fmt, $($arg)+)
+        )
+    }};
+    ($block:expr, $name:expr) => {{
+        $crate::metrics::SectionTimer::new_grouped(
+            format!("block {}", $block),
+            $name
+        )
+    }};
 }
 
 // ---------- Async helper ----------
@@ -212,5 +276,62 @@ pub fn print_section_summary() {
         let unattributed_ms = (total_ms - sum_exclusive).max(0.0);
         println!("TOTAL (wall)      {:>10}  {:>14.3}", "", total_ms);
         println!("UNATTRIBUTED (ms) {:>10}  {:>14.3}", "", unattributed_ms);
+    }
+
+    drop(map);
+
+    let block_map = BLOCK_SECTIONS.lock().unwrap();
+    if block_map.is_empty() {
+        return;
+    }
+
+    println!("\nPer-block breakdown:");
+
+    let mut blocks: Vec<_> = block_map.iter().collect();
+    blocks.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+
+    for (block_key, sections) in blocks {
+        println!();
+        println!("Block {}:", block_key.as_str());
+
+        let mut name_w = "Section".len();
+        for name in sections.keys() {
+            name_w = name_w.max(name.as_str().len());
+        }
+
+        println!("{:-<1$}", "", name_w + 56);
+        println!(
+            "{:<name_w$}  {:>10}  {:>14}  {:>14}  {:>14}",
+            "Section",
+            "Count",
+            "Incl (ms)",
+            "Excl (ms)",
+            "Avg Excl (ms)",
+            name_w = name_w
+        );
+        println!("{:-<1$}", "", name_w + 56);
+
+        let mut section_rows: Vec<_> = sections.iter().collect();
+        section_rows.sort_by(|(_, a), (_, b)| b.exclusive.cmp(&a.exclusive));
+
+        for (name, acc) in section_rows {
+            let incl_ms = acc.inclusive.as_secs_f64() * 1000.0;
+            let excl_ms = acc.exclusive.as_secs_f64() * 1000.0;
+            let avg_excl = if acc.count > 0 {
+                excl_ms / acc.count as f64
+            } else {
+                0.0
+            };
+            println!(
+                "{:<name_w$}  {:>10}  {:>14.3}  {:>14.3}  {:>14.3}",
+                name.as_str(),
+                acc.count,
+                incl_ms,
+                excl_ms,
+                avg_excl,
+                name_w = name_w
+            );
+        }
+        println!("{:-<1$}", "", name_w + 56);
     }
 }

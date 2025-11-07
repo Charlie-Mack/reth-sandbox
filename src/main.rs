@@ -103,7 +103,7 @@ async fn main() -> Result<(), eyre::Error> {
 
     for i in 0..num_of_blocks {
         let block_number = i + 1;
-        let _t = time_section!("total build for block number {}", block_number);
+        let _t = time_block_section!(block_number, "block_total");
         let block = block_builder
             .build_next_block(block_number, &mut actor_pool)
             .await?;

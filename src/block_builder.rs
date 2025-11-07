@@ -20,7 +20,7 @@ use crate::{
 };
 
 use crate::metrics::{self, time_async_section};
-use crate::time_section;
+use crate::time_block_section;
 
 type StateDB<'a> = State<StateProviderDatabase<&'a Box<dyn StateProvider>>>;
 
@@ -82,7 +82,7 @@ impl<'a> SandboxBlockBuilder<'a> {
                 err
             })?;
         {
-            let _t = time_section!("apply_pre_execution_changes");
+            let _t = time_block_section!(block_number, "apply_pre_execution_changes");
             builder.apply_pre_execution_changes().map_err(|err| {
                 warn!(target: "sandbox", %err, "failed to apply pre-execution changes");
                 err
@@ -99,7 +99,7 @@ impl<'a> SandboxBlockBuilder<'a> {
         let (g_wallet, g_nonce) = actor_pool.genesis_actor_info();
 
         let new_actors = {
-            let _t = time_section!("generate_new_actors");
+            let _t = time_block_section!(block_number, "generate_new_actors");
             (0..max_transactions)
                 .into_par_iter()
                 .map(|_| Actor::new())
@@ -112,7 +112,7 @@ impl<'a> SandboxBlockBuilder<'a> {
             .collect::<Vec<Address>>();
 
         {
-            let _t = time_section!("add_new_actors_to_pool");
+            let _t = time_block_section!(block_number, "add_new_actors_to_pool");
             for actor in new_actors {
                 actor_pool.add_actor_instance(actor);
             }
@@ -122,7 +122,7 @@ impl<'a> SandboxBlockBuilder<'a> {
 
         // generate transactions
         let txs = {
-            let _t = time_section!("generate_transactions");
+            let _t = time_block_section!(block_number, "generate_transactions");
 
             (0..max_transactions)
                 .into_par_iter()
@@ -139,7 +139,7 @@ impl<'a> SandboxBlockBuilder<'a> {
 
         for tx in txs {
             let gas_used = {
-                let _t = time_section!("execute_transaction");
+                let _t = time_block_section!(block_number, "execute_transaction");
                 let gas_used = builder.execute_transaction(tx).map_err(|err| {
                     warn!(target: "sandbox", %err, "failed to execute transaction");
                     err
@@ -157,7 +157,7 @@ impl<'a> SandboxBlockBuilder<'a> {
             block,
             ..
         } = {
-            let _t = time_section!("finish_building_block");
+            let _t = time_block_section!(block_number, "finish_building_block");
             let outcome = builder.finish(&self.state_provider).map_err(|err| {
                 warn!(target: "sandbox", %err, "failed to finish building block");
                 err
