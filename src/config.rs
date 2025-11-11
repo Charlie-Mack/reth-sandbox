@@ -1,45 +1,54 @@
-use std::sync::Arc;
+use alloy_primitives::Address;
 
-use alloy_genesis::Genesis;
-use reth_chainspec::ChainSpec;
+#[derive(Clone, Debug)]
+pub struct TransactionGasLimits {
+    pub transfer: u64,
+    pub deploy: u64,
+    pub transfer_token: u64,
+}
 
-pub fn custom_chain() -> Arc<ChainSpec> {
-    let custom_genesis = r#"
-{
-    "nonce": "0x42",
-    "timestamp": "0x0",
-    "extraData": "0x5343",
-    "gasLimit": "0x1DCD6500",
-    "difficulty": "0x400000000",
-    "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-    "coinbase": "0x0000000000000000000000000000000000000000",
-    "alloc": {
-        "0xFaa235fA90514d9083d0aa61878eBEb5Cf94FCD7": {
-            "balance": "0x4a47e3c12448f4ad000000"
+impl TransactionGasLimits {
+    pub fn new(transfer: u64, deploy: u64, transfer_token: u64) -> Self {
+        Self {
+            transfer,
+            deploy,
+            transfer_token,
         }
-    },
-    "number": "0x0",
-    "gasUsed": "0x0",
-    "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-    "config": {
-        "ethash": {},
-        "chainId": 2600,
-        "homesteadBlock": 0,
-        "eip150Block": 0,
-        "eip155Block": 0,
-        "eip158Block": 0,
-        "byzantiumBlock": 0,
-        "constantinopleBlock": 0,
-        "petersburgBlock": 0,
-        "istanbulBlock": 0,
-        "berlinBlock": 0,
-        "londonBlock": 0,
-        "terminalTotalDifficulty": 0,
-        "terminalTotalDifficultyPassed": true,
-        "shanghaiTime": 0
     }
 }
-"#;
-    let genesis: Genesis = serde_json::from_str(custom_genesis).unwrap();
-    Arc::new(genesis.into())
+
+#[derive(Clone, Debug)]
+pub struct SimulationConfig {
+    pub chain_id: u64,
+    pub num_of_blocks: u64,
+    pub unique_accounts: u64,
+    pub unique_tokens: u64,
+    pub gas_limit: u64,
+    pub genesis_private_key: &'static str,
+    pub genesis_address: Address,
+    pub tx_gas_limits: TransactionGasLimits,
+}
+
+impl SimulationConfig {
+    pub fn new(
+        chain_id: u64,
+        num_of_blocks: u64,
+        unique_accounts: u64,
+        unique_tokens: u64,
+        gas_limit: u64,
+        genesis_private_key: &'static str,
+        genesis_address: Address,
+        tx_gas_limits: TransactionGasLimits,
+    ) -> Self {
+        Self {
+            chain_id,
+            num_of_blocks,
+            unique_accounts,
+            unique_tokens,
+            gas_limit,
+            genesis_private_key,
+            genesis_address,
+            tx_gas_limits,
+        }
+    }
 }

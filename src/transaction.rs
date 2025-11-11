@@ -9,7 +9,11 @@ use k256::ecdsa::SigningKey;
 use reth_ethereum::TransactionSigned;
 use reth_primitives_traits::{Recovered, SignedTransaction};
 
-pub const DEFAULT_GAS_LIMIT: u64 = 21000;
+use crate::token::SandboxTokenHelper;
+
+pub const DEFAULT_GAS_LIMIT: u64 = 21_000;
+pub const DEAFULT_GAS_LIMIT_DEPLOY: u64 = 1_200_000;
+pub const DEAFULT_GAS_LIMIT_TOKEN_TRANSFER: u64 = 100_000;
 
 /// Helper for transaction operations
 #[derive(Debug)]
@@ -20,18 +24,77 @@ impl TransactionOperations {
     pub fn transfer_tx(
         chain_id: u64,
         sender: &LocalSigner<SigningKey>,
-        receiver: Address,
+        to: Address,
         nonce: u64,
+        value: U256,
     ) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
-        let tx = tx(
-            receiver,
-            chain_id,
-            DEFAULT_GAS_LIMIT,
-            None,
-            None,
-            nonce,
-            Some(20e9 as u128),
-        );
+        let tx = TransactionRequest {
+            nonce: Some(nonce),
+            value: Some(value),
+            to: Some(TxKind::Call(to)),
+            gas: Some(DEFAULT_GAS_LIMIT),
+            max_fee_per_gas: Some(20e9 as u128),
+            max_priority_fee_per_gas: Some(20e9 as u128),
+            chain_id: Some(chain_id),
+            input: TransactionInput {
+                input: None,
+                data: None,
+            },
+            authorization_list: None,
+            ..Default::default()
+        };
+        Self::sign_tx(sender, tx)
+    }
+
+    pub fn deploy_contract(
+        chain_id: u64,
+        sender: &LocalSigner<SigningKey>,
+        nonce: u64,
+        data: Bytes,
+    ) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
+        let tx = TransactionRequest {
+            nonce: Some(nonce),
+            value: None,
+            to: Some(TxKind::Create),
+            gas: Some(DEAFULT_GAS_LIMIT_DEPLOY),
+            max_fee_per_gas: Some(20e9 as u128),
+            max_priority_fee_per_gas: Some(20e9 as u128),
+            chain_id: Some(chain_id),
+            input: TransactionInput {
+                input: None,
+                data: Some(data),
+            },
+            authorization_list: None,
+            ..Default::default()
+        };
+        Self::sign_tx(sender, tx)
+    }
+
+    pub fn transfer_token(
+        chain_id: u64,
+        sender: &LocalSigner<SigningKey>,
+        nonce: u64,
+        token_address: Address,
+        to: Address,
+        token_amount: U256,
+    ) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
+        let data = SandboxTokenHelper::transfer(to, token_amount);
+
+        let tx = TransactionRequest {
+            nonce: Some(nonce),
+            value: None,
+            to: Some(TxKind::Call(token_address)),
+            gas: Some(DEAFULT_GAS_LIMIT_TOKEN_TRANSFER),
+            max_fee_per_gas: Some(20e9 as u128),
+            max_priority_fee_per_gas: Some(20e9 as u128),
+            chain_id: Some(chain_id),
+            input: TransactionInput {
+                input: None,
+                data: Some(data),
+            },
+            authorization_list: None,
+            ..Default::default()
+        };
         Self::sign_tx(sender, tx)
     }
 
@@ -45,29 +108,5 @@ impl TransactionOperations {
         let signed_tx = typed_tx.into_envelope(signature);
         let reth_tx: TransactionSigned = signed_tx.into();
         Recovered::new_unchecked(reth_tx, signer.address())
-    }
-}
-
-/// Creates a type 2 transaction
-fn tx(
-    to: Address,
-    chain_id: u64,
-    gas: u64,
-    data: Option<Bytes>,
-    delegate_to: Option<SignedAuthorization>,
-    nonce: u64,
-    max_fee_per_gas: Option<u128>,
-) -> TransactionRequest {
-    TransactionRequest {
-        nonce: Some(nonce),
-        value: Some(U256::from(100)),
-        to: Some(TxKind::Call(to)),
-        gas: Some(gas),
-        max_fee_per_gas,
-        max_priority_fee_per_gas: Some(20e9 as u128),
-        chain_id: Some(chain_id),
-        input: TransactionInput { input: None, data },
-        authorization_list: delegate_to.map(|addr| vec![addr]),
-        ..Default::default()
     }
 }
