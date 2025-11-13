@@ -1,24 +1,20 @@
-use std::sync::Arc;
-
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844};
 use alloy_primitives::{Address, address};
 use reth_db::DatabaseEnv;
 use reth_node_api::NodeTypesWithDBAdapter;
 use reth_node_core::node_config::NodeConfig;
 use reth_node_ethereum::EthereumNode;
-use reth_primitives_traits::Recovered;
-
 use reth_provider::ProviderFactory;
-
+use std::str::FromStr;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
 
 mod actor;
 mod block_builder;
 mod block_writer;
 mod chain;
 mod config;
+mod debug;
 mod metrics;
 mod orchestrator;
 mod token;
@@ -28,36 +24,27 @@ mod uniswap;
 use block_builder::SandboxBlockBuilder;
 use orchestrator::TransactionOrchestrator;
 
-use crate::{
-    actor::ActorPool,
-    config::{SimulationConfig, TransactionGasLimits},
-};
+use crate::{config::SimulationConfig, orchestrator::TX};
 
-//TODO: Figure out the num of blocks problem with 80% fill rate and gas limit / block num user request
+//TODOs:
+//- Provide support desired tps options
+//- Add a way to specify the number of blocks to build
+
 const GENESIS_PRIVATE_KEY: &str =
     "5ba8b410b0d2161dacd190f8aa6dfbc54ad1c84c67ee3e80611d92cc3fda8abd";
 const GENESIS_ADDRESS: Address = address!("0xFaa235fA90514d9083d0aa61878eBEb5Cf94FCD7");
 const NUM_OF_BLOCKS: u64 = 5;
 const GAS_LIMIT: u64 = 50_000_000;
 const CHAIN_ID: u64 = 2600;
-const UNIQUE_ACCOUNTS: u64 = 1_000;
-const UNIQUE_TOKENS: u64 = 1_00;
-
-//Gas Limits
-const TRANSFER_GAS_LIMIT: u64 = 21_000;
-const DEPLOY_TOKEN_GAS_LIMIT: u64 = 1_100_000;
-const TRANSFER_TOKEN_GAS_LIMIT: u64 = 60_000;
+const UNIQUE_ACCOUNTS: u64 = 1000;
+const UNIQUE_TOKENS: u64 = 10;
+const CHANNEL_BUFFER_SIZE: usize = 1000;
+const STD_BATCH_SIZE: u64 = 1000;
 
 #[tokio::main]
 async fn main() -> Result<(), eyre::Error> {
     metrics::run_start();
     tracing_subscriber::fmt::init();
-
-    let tx_gas_limits = TransactionGasLimits::new(
-        TRANSFER_GAS_LIMIT,
-        DEPLOY_TOKEN_GAS_LIMIT,
-        TRANSFER_TOKEN_GAS_LIMIT,
-    );
 
     let sim_config = SimulationConfig::new(
         CHAIN_ID,
@@ -67,7 +54,7 @@ async fn main() -> Result<(), eyre::Error> {
         GAS_LIMIT,
         GENESIS_PRIVATE_KEY,
         GENESIS_ADDRESS,
-        tx_gas_limits,
+        STD_BATCH_SIZE,
     );
 
     let chain = chain::custom_chain(
@@ -97,9 +84,14 @@ async fn main() -> Result<(), eyre::Error> {
     // Initialize genesis if needed
     reth_db_common::init::init_genesis(&provider_factory)?;
 
-    let (sender, receiver) = mpsc::channel::<Recovered<EthereumTxEnvelope<TxEip4844>>>(1000);
+    let (sender, receiver) = mpsc::channel::<TX>(CHANNEL_BUFFER_SIZE);
 
-    let mut block_builder = SandboxBlockBuilder::new(provider_factory.clone(), chain, receiver);
+    let mut block_builder = SandboxBlockBuilder::new(
+        provider_factory.clone(),
+        chain,
+        receiver,
+        sim_config.clone(),
+    );
 
     let tx_orchestrator = TransactionOrchestrator::new(sender, sim_config.clone());
 

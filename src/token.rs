@@ -27,6 +27,11 @@ impl SandboxTokenHelper {
         let call_data = SandboxToken::transferCall::new((to, value)).abi_encode();
         call_data.into()
     }
+
+    pub fn approve(spender: Address, value: U256) -> Bytes {
+        let call_data = SandboxToken::approveCall::new((spender, value)).abi_encode();
+        call_data.into()
+    }
 }
 
 pub struct TokenPool {
@@ -40,10 +45,6 @@ impl TokenPool {
 
     pub fn add_token(&mut self, token_address: Address) {
         self.tokens.push(Token::new(token_address));
-    }
-
-    pub fn tokens_deployed(&self) -> u64 {
-        self.tokens.len() as u64
     }
 
     pub fn token_address(&self, index: u64) -> Address {

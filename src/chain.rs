@@ -2,6 +2,7 @@ use alloy_genesis::Genesis;
 use alloy_primitives::{Address, U256};
 use reth_chainspec::ChainSpec;
 use std::{fs, path::PathBuf, sync::Arc};
+use tracing::{info, warn};
 
 pub fn custom_chain(gas_limit: u64, chain_id: u64, genesis_address: Address) -> Arc<ChainSpec> {
     let balance = U256::MAX;
@@ -51,9 +52,9 @@ pub fn custom_chain(gas_limit: u64, chain_id: u64, genesis_address: Address) -> 
         .join("sandbox_genesis.json");
 
     if let Err(e) = fs::write(&output_path, &custom_genesis) {
-        eprintln!("⚠️ Failed to write genesis file: {}", e);
+        warn!("⚠️ Failed to write genesis file: {}", e);
     } else {
-        println!("✅ Wrote genesis file to {:?}", output_path);
+        info!("✅ Wrote genesis file to {:?}", output_path);
     }
 
     // Parse JSON into Genesis → ChainSpec

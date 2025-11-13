@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use alloy_consensus::{BlockHeader, EthereumTxEnvelope, Transaction, TxEip4844};
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use alloy_rlp::Encodable;
 
@@ -14,14 +14,14 @@ use reth_evm::{
 };
 use reth_node_api::NodeTypesWithDBAdapter;
 use reth_node_ethereum::{EthEvmConfig, EthereumNode};
-use reth_primitives_traits::{Recovered, SealedHeader};
+use reth_primitives_traits::SealedHeader;
 use reth_provider::{ExecutionOutcome, ProviderFactory, StateProvider};
 use reth_revm::{State, database::StateProviderDatabase};
 use tokio::sync::mpsc::Receiver;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
-use crate::block_writer::BlockFileHeader;
-use crate::block_writer::BlockFileWriter;
+use crate::{block_writer::BlockFileHeader, config::SimulationConfig};
+use crate::{block_writer::BlockFileWriter, orchestrator::TX};
 
 type PF = ProviderFactory<NodeTypesWithDBAdapter<EthereumNode, Arc<DatabaseEnv>>>;
 
@@ -31,19 +31,21 @@ pub struct SandboxBlockBuilder {
     parent_timestamp: u64,
     gas_limit: u64,
     evm_config: EthEvmConfig,
-    receiver: Receiver<Recovered<EthereumTxEnvelope<TxEip4844>>>,
+    receiver: Receiver<TX>,
     block_writer: BlockFileWriter,
+    simulation_config: SimulationConfig,
 }
 
 impl SandboxBlockBuilder {
     pub fn new(
         provider_factory: PF,
         chain: Arc<ChainSpec>,
-        receiver: Receiver<Recovered<EthereumTxEnvelope<TxEip4844>>>,
+        receiver: Receiver<TX>,
+        simulation_config: SimulationConfig,
     ) -> Self {
         let output_path = std::env::current_dir().unwrap().join("blocks.bin");
 
-        let mut block_writer =
+        let block_writer =
             BlockFileWriter::new(&output_path, BlockFileHeader::new(false, 0, 100)).unwrap();
 
         let evm_config = EthEvmConfig::new(chain.clone());
@@ -63,10 +65,11 @@ impl SandboxBlockBuilder {
             evm_config,
             receiver,
             block_writer,
+            simulation_config,
         }
     }
 
-    pub fn finish_file_writer(mut self) -> eyre::Result<()> {
+    pub fn finish_file_writer(self) -> eyre::Result<()> {
         self.block_writer.finish()?;
         Ok(())
     }
@@ -82,6 +85,8 @@ impl SandboxBlockBuilder {
         self.parent_timestamp = outcome.block.sealed_header().timestamp;
 
         let block = outcome.block.clone().into_block();
+        let block_number = outcome.block.header().number();
+        let txs_in_block = outcome.block.body().transactions.len();
 
         let execution_output = Arc::new(ExecutionOutcome {
             bundle: bundle_state,
@@ -101,16 +106,44 @@ impl SandboxBlockBuilder {
         block.encode(&mut buf);
 
         self.block_writer.write_block(&buf)?;
+        debug!(
+            target: "sandbox::block_builder",
+            block = block_number,
+            txs = txs_in_block,
+            "wrote block bytes to file"
+        );
 
         let provider_rw = self.provider_factory.provider_rw()?;
         provider_rw.save_blocks(vec![executed_block])?;
         provider_rw.commit()?;
+        info!(
+            target: "sandbox::block_builder",
+            block = block_number,
+            txs = txs_in_block,
+            "persisted executed block to database"
+        );
 
         Ok(())
     }
 
     pub async fn start_building(&mut self) -> eyre::Result<()> {
+        let mut total_tx_count = 0;
+        let mut total_gas_used = 0;
+
         'block: loop {
+            if total_gas_used
+                >= self.simulation_config.gas_limit * self.simulation_config.num_of_blocks
+            {
+                self.receiver.close();
+                info!(
+                    target: "sandbox::block_builder",
+                    total_tx_count,
+                    total_gas_used,
+                    "simulation gas limit reached"
+                );
+                return Ok(());
+            }
+
             let state_provider = self.provider_factory.latest()?;
             let state = StateProviderDatabase::new(&state_provider);
             let mut state_db: State<StateProviderDatabase<&Box<dyn StateProvider>>> =
@@ -120,6 +153,15 @@ impl SandboxBlockBuilder {
                     .build();
 
             let parent_header = self.parent_header.clone();
+
+            let next_block_number = parent_header.number + 1;
+            debug!(
+                target: "sandbox::block_builder",
+                parent = parent_header.number,
+                next = next_block_number,
+                timestamp = self.parent_timestamp + 1,
+                "initializing block builder"
+            );
 
             let mut builder = self
                 .evm_config
@@ -140,8 +182,8 @@ impl SandboxBlockBuilder {
                     err
                 })?;
 
-            let mut cumulative_gas_used = 0;
-            let mut tx_count = 0;
+            let mut block_gas_used = 0;
+            let mut block_tx_count = 0;
 
             // leave 20% in the block
             let max_gas_for_block = self.gas_limit * 80 / 100;
@@ -150,35 +192,42 @@ impl SandboxBlockBuilder {
                 warn!(target: "sandbox", %err, "failed to apply pre-execution changes");
                 err
             })?;
+            debug!(
+                target: "sandbox::block_builder",
+                block = next_block_number,
+                "pre-execution changes applied"
+            );
 
             while let Some(tx) = self.receiver.recv().await {
-                // info!("Executing transaction: {:?}", tx);
-
-                let tx_nonce = tx.nonce();
-
                 // info!("Executing transaction for nonce: {}", tx_nonce);
 
                 let gas_used = builder
-                    .execute_transaction_with_result_closure(tx, |res| {
+                    .execute_transaction_with_result_closure(tx.clone(), |res| {
                         // info!(target: "sandbox", "transaction result: {:?}", res);
+                        if !res.is_success() {
+                            info!(target: "sandbox", "transaction result: {:?}", res);
+                            info!(target: "sandbox", "transaction: {:?}", tx);
+                        }
                     })
                     .map_err(|err| {
-                        warn!(target: "sandbox", %err, "failed to execute transaction");
+                        warn!(target: "sandbox", %err, "failed to execute transaction {:?}", tx);
                         err
                     })?;
 
-                cumulative_gas_used += gas_used;
-                tx_count += 1;
+                block_gas_used += gas_used;
+                block_tx_count += 1;
 
-                if cumulative_gas_used >= max_gas_for_block {
+                if block_gas_used >= max_gas_for_block {
                     //finish the block
                     //commit to the db
                     //call build next block
 
                     //Last transaction in the block
                     info!(
-                        "The last transaction in the block is for nonce: {}",
-                        tx_nonce,
+                        target: "sandbox::block_builder",
+                        block = next_block_number,
+                        block_tx_count,
+                        block_gas_used,
                     );
 
                     let outcome = builder.finish(&state_provider).map_err(|err| {
@@ -186,20 +235,42 @@ impl SandboxBlockBuilder {
                         err
                     })?;
 
+                    info!(
+                        target: "sandbox::block_builder",
+                        block = next_block_number,
+                        txs_in_block = block_tx_count,
+                        gas_used = block_gas_used,
+                        "sealing full block"
+                    );
+
                     self.finish_block_and_commit(outcome, state_db).await?;
+
+                    total_tx_count += block_tx_count;
+                    total_gas_used += block_gas_used;
 
                     continue 'block;
                 }
             }
 
-            let outcome = builder.finish(&state_provider).map_err(|err| {
-                warn!(target: "sandbox", %err, "failed to finish building block");
-                err
-            })?;
+            // let outcome = builder.finish(&state_provider).map_err(|err| {
+            //     warn!(target: "sandbox", %err, "failed to finish building block");
+            //     err
+            // })?;
 
-            self.finish_block_and_commit(outcome, state_db).await?;
+            // info!(
+            //     target: "sandbox::block_builder",
+            //     block = next_block_number,
+            //     txs_in_block = block_tx_count,
+            //     gas_used = block_gas_used,
+            //     "sealing block after channel closure"
+            // );
 
-            return Ok(());
+            // self.finish_block_and_commit(outcome, state_db).await?;
+
+            // total_tx_count += block_tx_count;
+            // total_gas_used += block_gas_used;
+
+            // return Ok(());
         }
     }
 }

@@ -1,2 +1,4 @@
 /target
 /contracts/
+blocks.bin
+sandbox_genesis.json
