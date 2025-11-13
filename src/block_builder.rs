@@ -1,3 +1,5 @@
+//! Builds executed blocks from streamed transactions and persists them to disk.
+
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader;
@@ -23,8 +25,11 @@ use tracing::{debug, info, warn};
 use crate::{block_writer::BlockFileHeader, config::SimulationConfig};
 use crate::{block_writer::BlockFileWriter, orchestrator::TX};
 
+/// Concrete provider factory type used throughout the builder.
 type PF = ProviderFactory<NodeTypesWithDBAdapter<EthereumNode, Arc<DatabaseEnv>>>;
 
+/// Consumes recovered transactions, executes them with Reth's block builder, and
+/// writes both RLP bytes and state updates to disk.
 pub struct SandboxBlockBuilder {
     provider_factory: PF,
     parent_header: SealedHeader,
@@ -37,6 +42,7 @@ pub struct SandboxBlockBuilder {
 }
 
 impl SandboxBlockBuilder {
+    /// Prepare the builder with the genesis header and file writer output path.
     pub fn new(
         provider_factory: PF,
         chain: Arc<ChainSpec>,
@@ -69,11 +75,13 @@ impl SandboxBlockBuilder {
         }
     }
 
+    /// Flush any buffered block bytes and close the backing file handle.
     pub fn finish_file_writer(self) -> eyre::Result<()> {
         self.block_writer.finish()?;
         Ok(())
     }
 
+    /// Persist the executed block both to the binary file and the Reth database.
     async fn finish_block_and_commit(
         &mut self,
         outcome: BlockBuilderOutcome<EthPrimitives>,
@@ -126,20 +134,28 @@ impl SandboxBlockBuilder {
         Ok(())
     }
 
+    /// Pull transactions from the orchestrator, keep building blocks until the gas budget is
+    /// exhausted,
     pub async fn start_building(&mut self) -> eyre::Result<()> {
         let mut total_tx_count = 0;
         let mut total_gas_used = 0;
+        let mut total_blocks_built = 0;
 
-        'block: loop {
-            if total_gas_used
-                >= self.simulation_config.gas_limit * self.simulation_config.num_of_blocks
+        let gas_limit = self.gas_limit;
+        // Keep at 50% so the base fee doesnt change
+        let max_gas_for_block = gas_limit * 50 / 100;
+
+        'block_building: loop {
+            if self
+                .simulation_config
+                .limits_hit(total_blocks_built, total_tx_count, total_gas_used)
             {
                 self.receiver.close();
                 info!(
                     target: "sandbox::block_builder",
                     total_tx_count,
                     total_gas_used,
-                    "simulation gas limit reached"
+                    "simulation limits reached, stopping builder"
                 );
                 return Ok(());
             }
@@ -153,6 +169,15 @@ impl SandboxBlockBuilder {
                     .build();
 
             let parent_header = self.parent_header.clone();
+
+            //base fee for the block
+            let base_fee = parent_header.base_fee_per_gas.unwrap_or(0);
+
+            info!(
+                target: "sandbox::block_builder",
+                base_fee = base_fee,
+                "base fee for the block"
+            );
 
             let next_block_number = parent_header.number + 1;
             debug!(
@@ -185,9 +210,6 @@ impl SandboxBlockBuilder {
             let mut block_gas_used = 0;
             let mut block_tx_count = 0;
 
-            // leave 20% in the block
-            let max_gas_for_block = self.gas_limit * 80 / 100;
-
             builder.apply_pre_execution_changes().map_err(|err| {
                 warn!(target: "sandbox", %err, "failed to apply pre-execution changes");
                 err
@@ -199,11 +221,8 @@ impl SandboxBlockBuilder {
             );
 
             while let Some(tx) = self.receiver.recv().await {
-                // info!("Executing transaction for nonce: {}", tx_nonce);
-
                 let gas_used = builder
                     .execute_transaction_with_result_closure(tx.clone(), |res| {
-                        // info!(target: "sandbox", "transaction result: {:?}", res);
                         if !res.is_success() {
                             info!(target: "sandbox", "transaction result: {:?}", res);
                             info!(target: "sandbox", "transaction: {:?}", tx);
@@ -247,30 +266,10 @@ impl SandboxBlockBuilder {
 
                     total_tx_count += block_tx_count;
                     total_gas_used += block_gas_used;
-
-                    continue 'block;
+                    total_blocks_built += 1;
+                    continue 'block_building;
                 }
             }
-
-            // let outcome = builder.finish(&state_provider).map_err(|err| {
-            //     warn!(target: "sandbox", %err, "failed to finish building block");
-            //     err
-            // })?;
-
-            // info!(
-            //     target: "sandbox::block_builder",
-            //     block = next_block_number,
-            //     txs_in_block = block_tx_count,
-            //     gas_used = block_gas_used,
-            //     "sealing block after channel closure"
-            // );
-
-            // self.finish_block_and_commit(outcome, state_db).await?;
-
-            // total_tx_count += block_tx_count;
-            // total_gas_used += block_gas_used;
-
-            // return Ok(());
         }
     }
 }

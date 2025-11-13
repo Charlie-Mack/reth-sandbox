@@ -1,10 +1,10 @@
+//! Helpers that deploy Uniswap v2 artifacts and craft router interactions.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use alloy_sol_macro::sol;
-use alloy_sol_types::{SolCall, SolConstructor, SolEvent};
-use reth_primitives_traits::Recovered;
+use alloy_sol_types::{SolCall, SolConstructor};
 use tracing::info;
 
 use crate::actor::Actor;
@@ -37,6 +37,7 @@ sol!(
     "artifacts/UniswapV2ERC20.json"
 );
 
+/// Holds relevant Uniswap contract addresses
 pub struct Uniswap {
     factory_address: Address,
     router_address: Address,
@@ -44,6 +45,7 @@ pub struct Uniswap {
 }
 
 impl Uniswap {
+    /// Record the deployed addresses.
     pub fn new(factory_address: Address, router_address: Address, weth_address: Address) -> Self {
         info!(target: "sandbox", "Uniswap created: factory_address: {:?}, router_address: {:?}, weth_address: {:?}", factory_address, router_address, weth_address);
         Self {
@@ -53,6 +55,7 @@ impl Uniswap {
         }
     }
 
+    /// Deploy WETH, factory, and router contracts using the provided deployer.
     pub fn init(deployer: &Actor) -> (Uniswap, Vec<TX>) {
         let mut txs = Vec::new();
 
@@ -99,20 +102,25 @@ impl Uniswap {
         (uniswap, txs)
     }
 
+    /// Factory address accessor.
     pub fn factory(&self) -> Address {
         self.factory_address
     }
+    /// Router address accessor.
     pub fn router(&self) -> Address {
         self.router_address
     }
+    /// WETH token address accessor.
     pub fn weth(&self) -> Address {
         self.weth_address
     }
 }
 
+/// Encode commonly used factory contract calls.
 pub struct UniswapV2FactoryHelper;
 
 impl UniswapV2FactoryHelper {
+    /// Build bytecode + constructor calldata payload.
     pub fn deploy(deployer: Address) -> Bytes {
         [
             UniswapV2Factory::BYTECODE.as_ref(),
@@ -122,6 +130,7 @@ impl UniswapV2FactoryHelper {
         .into()
     }
 
+    /// Encode `createPair(token0, token1)`.
     pub fn create_pair(token0: Address, token1: Address) -> Bytes {
         UniswapV2Factory::createPairCall::new((token0, token1))
             .abi_encode()
@@ -129,9 +138,11 @@ impl UniswapV2FactoryHelper {
     }
 }
 
+/// Encode router interactions used throughout the simulation.
 pub struct UniswapV2Router02Helper;
 
 impl UniswapV2Router02Helper {
+    /// Build bytecode + constructor calldata payload.
     pub fn deploy(factory: Address, weth: Address) -> Bytes {
         [
             UniswapV2Router02::BYTECODE.as_ref(),
@@ -141,6 +152,7 @@ impl UniswapV2Router02Helper {
         .into()
     }
 
+    /// Build calldata for `addLiquidityETH`.
     pub fn add_liquidity(token: Address, to: Address, amount_token_desired: U256) -> Bytes {
         let amount_token_min = U256::from(0);
         let amount_eth_min = U256::from(0);
@@ -157,6 +169,7 @@ impl UniswapV2Router02Helper {
         call_data.into()
     }
 
+    /// Build calldata for `swapExactETHForTokens`.
     pub fn swap_eth_for_token(weth: Address, token_out: Address, to: Address) -> Bytes {
         let amount_out_min = U256::from(0);
 
@@ -171,6 +184,7 @@ impl UniswapV2Router02Helper {
         .into()
     }
 
+    /// Build calldata for `swapExactTokensForETH`.
     pub fn swap_token_for_eth(
         token_in: Address,
         weth: Address,
@@ -190,6 +204,7 @@ impl UniswapV2Router02Helper {
         .into()
     }
 
+    /// Timestamps for simulation start at 0 and increment by 1 so this should be good
     fn get_deadline() -> U256 {
         U256::from(
             SystemTime::now()

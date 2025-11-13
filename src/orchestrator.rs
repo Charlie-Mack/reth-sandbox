@@ -1,3 +1,6 @@
+//! Generates transaction load in distinct phases while the block builder ingests
+//! the resulting channel.
+
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844};
 use alloy_primitives::{Address, TxKind, U256};
 use rand::Rng;
@@ -14,25 +17,38 @@ use crate::{
     uniswap::{Uniswap, UniswapV2FactoryHelper, UniswapV2Router02Helper},
 };
 
+/// Convenience alias for recovered EIP-4844 envelopes sent across the channel.
 pub type TX = Recovered<EthereumTxEnvelope<TxEip4844>>;
 
 #[derive(Debug, Clone, Copy)]
 enum TransactionType {
+    /// Simple ETH transfer between EOAs.
     EthTransfer,
+    /// ERC20 transfer using the sandbox token.
     TokenTransfer,
+    /// Spend token to receive WETH via the router.
     UniswapSwapForEth,
+    /// Spend ETH to acquire a token via the router.
     UniswapSwapForToken,
 }
 
+/// Stages the simulation walks through before issuing steady-state load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SimulationPhase {
+    /// Allocate ETH from deployer to the actor pool.
     ActorFunding,
+    /// Deploy ERC20 bytecode.
     TokenDeployment,
+    /// Deploy Uniswap contracts.
     UniswapDeployment,
+    /// Seed each token with a pool and liquidity.
     UniswapPoolCreation,
+    /// Send limitless user-style transactions. Mixes transaction types.
     TransactionLoad,
 }
 
+/// Drives high-level simulation phases and emits signed transactions onto the
+/// the block builder.
 pub struct TransactionOrchestrator {
     sender: Sender<TX>,
     config: SimulationConfig,
@@ -45,6 +61,7 @@ pub struct TransactionOrchestrator {
 }
 
 impl TransactionOrchestrator {
+    /// Wire together helper pools using the genesis deployer as the root signer.
     pub fn new(sender: Sender<TX>, config: SimulationConfig) -> Self {
         let actor_pool = ActorPool::new(
             config.genesis_private_key,
@@ -66,6 +83,7 @@ impl TransactionOrchestrator {
         }
     }
 
+    /// Spawn the orchestration loop and streams batches of transactions to the block builder.
     pub async fn run(mut self) -> eyre::Result<()> {
         tokio::spawn(async move {
             info!(
@@ -113,6 +131,7 @@ impl TransactionOrchestrator {
         Ok(())
     }
 
+    /// Dispatch to a specialized batch generator based on the current phase.
     fn generate_batch(&mut self) -> Vec<TX> {
         match self.current_phase() {
             SimulationPhase::ActorFunding => self.generate_actor_funding_batch(),
@@ -123,6 +142,8 @@ impl TransactionOrchestrator {
         }
     }
 
+    /// Fund each synthetic actor from the genesis deployer so later phases can
+    /// rely on independent nonces.
     fn generate_actor_funding_batch(&mut self) -> Vec<TX> {
         let batch_size = std::cmp::min(
             self.config.std_batch_size,
@@ -150,6 +171,7 @@ impl TransactionOrchestrator {
         txs
     }
 
+    /// Deploy simple ERC20 contracts and remember their deterministic addresses.
     fn generate_token_deployment_batch(&mut self) -> Vec<TX> {
         let batch_size = std::cmp::min(
             self.config.std_batch_size,
@@ -184,6 +206,7 @@ impl TransactionOrchestrator {
         txs
     }
 
+    /// Deploy WETH, factory, and router contracts needed for subsequent swaps.
     fn generate_uniswap_deployment_batch(&mut self) -> Vec<TX> {
         let (uniswap, deployment_txs) = Uniswap::init(self.actor_pool.deployer());
         self.uniswap = Some(uniswap);
@@ -192,6 +215,8 @@ impl TransactionOrchestrator {
         deployment_txs
     }
 
+    /// Create Uniswap pools for each token, approve router spending, then add
+    /// initial liquidity so price-impact transactions behave realistically.
     fn generate_uniswap_pool_creation_batch(&mut self) -> Vec<TX> {
         let batch_size = std::cmp::min(
             self.config.std_batch_size / 3,
@@ -260,6 +285,7 @@ impl TransactionOrchestrator {
         txs
     }
 
+    /// Emit a mixed workload of transfers and swaps once necessary setup is complete.
     fn generate_transaction_load_batch(&mut self) -> Vec<TX> {
         let batch_size = self.config.std_batch_size;
 
@@ -382,6 +408,7 @@ impl TransactionOrchestrator {
         payloads
     }
 
+    /// Decide which phase of the simulation should run next.
     fn current_phase(&self) -> SimulationPhase {
         if self.actors_funded < self.config.unique_accounts {
             SimulationPhase::ActorFunding

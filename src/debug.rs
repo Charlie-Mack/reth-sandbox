@@ -1,9 +1,12 @@
+//! Quick inspection helpers invoked while iterating on the sandbox.
+
 use alloy_primitives::{Address, map::HashMap};
 use reth_db::cursor::{DbCursorRO, DbDupCursorRO};
 use reth_db::{tables, transaction::DbTx};
 use reth_provider::{DBProvider, StateProvider};
 use tracing::info;
 
+/// Log the account metadata for the provided address.
 pub fn get_basic_account_info(state_provider: &dyn StateProvider, address: Address) {
     let account = state_provider.basic_account(&address).unwrap();
     let Some(account) = account else {
@@ -22,6 +25,7 @@ pub fn get_basic_account_info(state_provider: &dyn StateProvider, address: Addre
     );
 }
 
+/// Enumerate and log every storage slot for the provided contract.
 pub fn get_contract_storage(
     provider: &impl DBProvider,
     state_provider: &dyn StateProvider,

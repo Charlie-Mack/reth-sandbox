@@ -1,3 +1,5 @@
+//! Utilities for constructing and signing sandbox transactions.
+
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844};
 use alloy_network::TxSignerSync;
 use alloy_primitives::{Bytes, TxKind, U256};
@@ -8,8 +10,11 @@ use k256::ecdsa::SigningKey;
 use reth_ethereum::TransactionSigned;
 use reth_primitives_traits::Recovered;
 
-pub const DEFAULT_GAS_LIMIT: u64 = 10_000_000;
+/// Gas limit assigned to every synthetic transaction (high at the moment, no reason not to be).
+pub const DEFAULT_GAS_LIMIT: u64 = 5_000_000;
 
+/// Construct and sign a recovered EIP-4844 transaction using the provided
+/// signer, nonce, and payload.
 pub fn tx(
     sender: &LocalSigner<SigningKey>,
     nonce: u64,
@@ -24,7 +29,7 @@ pub fn tx(
         gas: Some(DEFAULT_GAS_LIMIT),
         max_fee_per_gas: Some(20e9 as u128),
         max_priority_fee_per_gas: Some(20e9 as u128),
-        chain_id: Some(2600u64), //FIXME
+        chain_id: Some(2600u64), // make this dynamic
         input: TransactionInput {
             input: None,
             data: data,
@@ -35,7 +40,7 @@ pub fn tx(
     sign_tx(sender, tx)
 }
 
-/// Signs an arbitrary [`TransactionRequest`] using the provided wallet
+/// Signs an arbitrary [`TransactionRequest`] using the provided wallet.
 fn sign_tx(
     signer: &LocalSigner<SigningKey>,
     tx: TransactionRequest,

@@ -1,9 +1,13 @@
+//! Generates a custom genesis file tuned for high-gas sandbox simulations.
+
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, U256};
 use reth_chainspec::ChainSpec;
 use std::{fs, path::PathBuf, sync::Arc};
 use tracing::{info, warn};
 
+/// Build a bespoke `ChainSpec` and write the corresponding JSON next to the
+/// binary for easy reuse with `reth`.
 pub fn custom_chain(gas_limit: u64, chain_id: u64, genesis_address: Address) -> Arc<ChainSpec> {
     let balance = U256::MAX;
 

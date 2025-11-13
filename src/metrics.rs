@@ -112,10 +112,7 @@ impl SectionTimer {
         start_section(name.into(), None)
     }
     #[inline]
-    pub fn new_grouped(
-        block_label: impl Into<Key>,
-        name: impl Into<Key>,
-    ) -> Self {
+    pub fn new_grouped(block_label: impl Into<Key>, name: impl Into<Key>) -> Self {
         start_section(name.into(), Some(block_label.into()))
     }
 }
@@ -132,7 +129,11 @@ fn start_section(key: Key, block: Option<Key>) -> SectionTimer {
         // Push this section
         st.push(ActiveSpan::new(key.clone(), block.clone()));
     });
-    SectionTimer { key, block, _private: () }
+    SectionTimer {
+        key,
+        block,
+        _private: (),
+    }
 }
 
 impl Drop for SectionTimer {
@@ -158,7 +159,9 @@ impl Drop for SectionTimer {
             if let Some(block_key) = self.block.clone() {
                 let mut map = BLOCK_SECTIONS.lock().unwrap();
                 let block_entry = map.entry(block_key).or_insert_with(HashMap::new);
-                let entry = block_entry.entry(self.key.clone()).or_insert_with(Accum::default);
+                let entry = block_entry
+                    .entry(self.key.clone())
+                    .or_insert_with(Accum::default);
                 entry.inclusive += inclusive;
                 entry.exclusive += exclusive;
                 entry.count += 1;

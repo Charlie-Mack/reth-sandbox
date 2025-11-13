@@ -1,3 +1,5 @@
+//! Minimal block file writer that stores RLP blobs alongside a tiny header.
+
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -10,7 +12,7 @@ const FILE_FORMAT_VERSION: u8 = 1;
 /// Magic bytes to identify the file format
 const MAGIC_BYTES: &[u8] = b"RETH";
 
-// The type of block that is stored in the file
+/// Distinguishes between raw Ethereum blocks and any future rollup variants.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
 pub(crate) enum BlockType {
@@ -19,6 +21,8 @@ pub(crate) enum BlockType {
 }
 
 /// Block file header
+/// Metadata written once at the head of the block file so later tools can
+/// verify compatibility.
 #[derive(Debug)]
 pub(crate) struct BlockFileHeader {
     version: u8,
@@ -28,6 +32,7 @@ pub(crate) struct BlockFileHeader {
 }
 
 impl BlockFileHeader {
+    /// Build a header describing the chain range contained in the file.
     pub fn new(is_optimism: bool, from_block: u64, to_block: u64) -> Self {
         Self {
             version: FILE_FORMAT_VERSION,
@@ -46,6 +51,7 @@ impl BlockFileHeader {
         self.block_type
     }
 
+    /// Serialize the header to the provided writer.
     fn write_to(&self, writer: &mut impl Write) -> eyre::Result<()> {
         writer.write_all(MAGIC_BYTES)?;
         writer.write_all(&[self.version])?;
@@ -56,6 +62,7 @@ impl BlockFileHeader {
     }
 
     /// Read header from file (for the decoder)
+    /// Parse a header from disk (used by decoders).
     fn read_from(reader: &mut impl std::io::Read) -> eyre::Result<Self> {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
@@ -93,13 +100,14 @@ impl BlockFileHeader {
     }
 }
 
-// Writer for block storage files
+/// Streams block blobs to disk for later replay by `reth-bench`.
 pub struct BlockFileWriter {
     writer: BufWriter<File>,
     blocks_written: usize,
 }
 
 impl BlockFileWriter {
+    /// Create the file, write the header, and prepare buffered writes.
     pub fn new(path: &Path, header: BlockFileHeader) -> eyre::Result<Self> {
         let mut writer = BufWriter::new(File::create(path)?);
         header.write_to(&mut writer)?;
@@ -110,6 +118,7 @@ impl BlockFileWriter {
         })
     }
 
+    /// Write a single length-prefixed RLP blob to the output file.
     pub fn write_block(&mut self, rlp_data: &[u8]) -> eyre::Result<()> {
         self.writer
             .write_all(&(rlp_data.len() as u32).to_le_bytes())?;
@@ -118,6 +127,7 @@ impl BlockFileWriter {
         Ok(())
     }
 
+    /// Flush the writer and return how many blocks were persisted.
     pub fn finish(mut self) -> eyre::Result<usize> {
         self.writer.flush()?;
         Ok(self.blocks_written)
