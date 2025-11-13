@@ -160,6 +160,14 @@ impl SandboxBlockBuilder {
                 return Ok(());
             }
 
+            info!(
+                target: "sandbox::block_builder",
+                total_blocks_built,
+                total_tx_count,
+                total_gas_used,
+                "Simulation progress: {total_blocks_built} blocks built, {total_tx_count} transactions processed, {total_gas_used} gas used"
+            );
+
             let state_provider = self.provider_factory.latest()?;
             let state = StateProviderDatabase::new(&state_provider);
             let mut state_db: State<StateProviderDatabase<&Box<dyn StateProvider>>> =

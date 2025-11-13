@@ -2,3 +2,4 @@
 contracts/
 blocks.bin
 sandbox_genesis.json
+output/
